@@ -100,7 +100,8 @@ dependency.
 
 Set `VLLM_FL_MUSA_FUSED_TOPK=1` with `VLLM_PLUGINS=fl` to opt in. Install a
 FlagGems-vllm build that exports `topk_sample_from_logits` before enabling the
-switch.
+switch. If the fused API cannot be loaded at startup, the plugin logs a warning
+and uses vLLM's native sampler.
 
 The fused path accepts contiguous FP32 MUSA logits, vocabulary sizes up to
 8192 and normalized per-row Top-K values. Requests with active Top-P, per-request

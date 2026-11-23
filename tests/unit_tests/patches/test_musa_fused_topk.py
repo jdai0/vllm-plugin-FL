@@ -1,7 +1,7 @@
 # Copyright (c) 2026 BAAI. All rights reserved.
 
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +10,7 @@ import torch
 from vllm_fl.dispatch.backends.vendor.musa.impl.topk_sampling import (
     patch_fused_topk_sampling,
 )
+from vllm_fl.dispatch.backends.vendor.musa.patch import apply_musa_patches
 
 
 def tensor_metadata(shape, dtype, device, contiguous=True):
@@ -104,3 +105,47 @@ def test_musa_fused_topk_reports_missing_kernel(monkeypatch):
     monkeypatch.setitem(sys.modules, "flaggems_vllm", SimpleNamespace())
     with pytest.raises(RuntimeError, match="requires FlagGems-vllm"):
         patch_fused_topk_sampling(SimpleNamespace())
+
+
+@pytest.mark.parametrize("mode", ["disabled", "enabled", "missing_dependency"])
+def test_musa_fused_topk_startup(monkeypatch, caplog, mode):
+    sampler_module_name = "vllm.v1.sample.ops.topk_topp_sampler"
+    parts = sampler_module_name.split(".")
+    parent = None
+    for i, part in enumerate(parts):
+        name = ".".join(parts[: i + 1])
+        module = ModuleType(name)
+        module.__path__ = []
+        monkeypatch.setitem(sys.modules, name, module)
+        if parent is not None:
+            setattr(parent, part, module)
+        parent = module
+
+    native = Mock()
+    module.TopKTopPSampler = type("Sampler", (), {"forward_native": native})
+    module.apply_top_k_top_p = Mock()
+    module.apply_top_k_top_p_pytorch = Mock()
+    if mode == "disabled":
+        monkeypatch.delenv("VLLM_FL_MUSA_FUSED_TOPK", raising=False)
+    else:
+        monkeypatch.setenv("VLLM_FL_MUSA_FUSED_TOPK", "1")
+    package = (
+        SimpleNamespace(topk_sample_from_logits=Mock()) if mode == "enabled" else None
+    )
+    monkeypatch.setitem(sys.modules, "flaggems_vllm", package)
+
+    patch_module = sys.modules[apply_musa_patches.__module__]
+    monkeypatch.setattr(patch_module, "_patches_applied", False)
+    for name in vars(patch_module):
+        if name.startswith("patch_") and name != "patch_topk_topp_sampler":
+            monkeypatch.setattr(patch_module, name, Mock())
+    apply_musa_patches()
+
+    assert module.apply_top_k_top_p is module.apply_top_k_top_p_pytorch
+    patch_module.patch_device_config_for_musa.assert_called_once_with()
+    installed = module.TopKTopPSampler.forward_native
+    if mode == "enabled":
+        assert installed.__wrapped__ is native
+    else:
+        assert installed is native
+    assert ("Fused Top-K unavailable" in caplog.text) == (mode == "missing_dependency")
