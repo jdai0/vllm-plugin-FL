@@ -5,6 +5,7 @@ MUSA-specific patches for vLLM compatibility.
 """
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -35,6 +36,7 @@ def patch_topk_topp_sampler():
     ``torch.ops._C_cache_ops`` which are not available on MUSA.  Replace
     with the pure-PyTorch fallback that vllm ships alongside.
     """
+    use_fused_topk = os.environ.get("VLLM_FL_MUSA_FUSED_TOPK") == "1"
     try:
         from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch
         import vllm.v1.sample.ops.topk_topp_sampler as _sampler_mod
@@ -42,7 +44,16 @@ def patch_topk_topp_sampler():
         _sampler_mod.apply_top_k_top_p = apply_top_k_top_p_pytorch
         logger.info("Patched apply_top_k_top_p to use PyTorch-native path for MUSA")
     except Exception as e:
+        if use_fused_topk:
+            raise RuntimeError("Fused Top-K requires the vLLM native sampler") from e
         logger.warning("Failed to patch apply_top_k_top_p for MUSA: %s", e)
+        return
+
+    if use_fused_topk:
+        from .impl.topk_sampling import patch_fused_topk_sampling
+
+        patch_fused_topk_sampling(_sampler_mod)
+        logger.info("Enabled FlagGems-vllm fused Top-K sampling on MUSA")
 
 
 def patch_triton_reshape_and_cache_flash():
