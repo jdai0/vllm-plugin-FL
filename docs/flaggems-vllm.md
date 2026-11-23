@@ -95,3 +95,14 @@ NVIDIA compatibility exclusions are loaded automatically from `nvidia.yaml`.
 No deployment blacklist append or CUDA/NCCL workaround is required. Validate
 both modes with the original model gates when updating FlagGems or the fused
 dependency.
+
+## MUSA Top-K sampler
+
+Set `VLLM_FL_MUSA_FUSED_TOPK=1` with `VLLM_PLUGINS=fl` to opt in. Install a
+FlagGems-vllm build that exports `topk_sample_from_logits` before enabling the
+switch. If the fused API cannot be loaded at startup, the plugin logs a warning
+and uses vLLM's native sampler.
+
+The fused path accepts contiguous FP32 MUSA logits, vocabulary sizes up to
+8192 and normalized per-row Top-K values. Requests with active Top-P, per-request
+generators, FP64 sampling or processed logprobs use vLLM's native sampler.
